@@ -37,6 +37,25 @@ export function resolveDefaultProfileArn(authMethod) {
 
 export const KIRO_THINKING_BUDGET_DEFAULT = 16000;
 
+/**
+ * Clamp a Claude/OpenAI effort level to what a given Kiro upstream model
+ * accepts in `output_config.effort`.
+ *
+ * Opus 4.7 / 4.8 accept the full set (low|medium|high|xhigh|max). Older
+ * families — Opus 4.6 and the Sonnet/Haiku 4.5/4.6 models Kiro currently
+ * exposes — top out at `max` and reject `xhigh`, so `xhigh` clamps to `max`.
+ *
+ * @param {string} effort  low|medium|high|xhigh|max
+ * @param {string} upstreamModel  upstream Kiro model id (suffixes already stripped)
+ * @returns {string} an effort level the model accepts
+ */
+export function clampEffortForModel(effort, upstreamModel) {
+  if (effort !== "xhigh") return effort;
+  const m = typeof upstreamModel === "string" ? upstreamModel.toLowerCase() : "";
+  const supportsXhigh = m.includes("opus-4.7") || m.includes("opus-4.8");
+  return supportsXhigh ? "xhigh" : "max";
+}
+
 export const KIRO_AGENTIC_SYSTEM_PROMPT = `
 # CRITICAL: CHUNKED WRITE PROTOCOL (MANDATORY)
 

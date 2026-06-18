@@ -28,9 +28,11 @@ import { v4 as uuidv4 } from "uuid";
 import {
   resolveKiroModel,
   isThinkingEnabled,
-  buildThinkingSystemPrefix,
+  clampEffortForModel,
   KIRO_AGENTIC_SYSTEM_PROMPT,
 } from "../../config/kiroConstants.js";
+import { extractThinking } from "../concerns/thinkingUnified.js";
+import { budgetToLevel } from "../concerns/thinking.js";
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { ROLE, CLAUDE_BLOCK } from "../schema/index.js";
 
@@ -378,8 +380,15 @@ export function claudeToKiroRequest(model, body, stream, credentials) {
     agentic,
     thinking: modelImpliesThinking,
   } = resolveKiroModel(model);
+  // Unified thinking intent (reads output_config.effort, Claude thinking,
+  // reasoning_effort, etc). mode "none" means explicitly disabled.
+  const thinkingCfg = extractThinking(body);
   const thinkingEnabled =
-    modelImpliesThinking || isThinkingEnabled(body, null, model);
+    thinkingCfg?.mode === "none"
+      ? false
+      : modelImpliesThinking ||
+        isThinkingEnabled(body, null, model) ||
+        !!thinkingCfg;
 
   // Guard 1: no client tools → flatten all tool interactions to text.
   if (!clientProvidedTools) {
@@ -412,10 +421,11 @@ export function claudeToKiroRequest(model, body, stream, credentials) {
     if (systemText) finalContent = `${systemText}\n\n${finalContent}`;
   }
 
-  // Prefix order: thinking_mode tag, timestamp marker, then agentic prompt.
+  // Prefix order: timestamp marker, then agentic prompt. Thinking effort is
+  // no longer injected as a <thinking_mode> prompt hint — it travels natively
+  // in additionalModelRequestFields.output_config.effort (see below).
   const timestamp = new Date().toISOString();
   const prefixParts = [];
-  if (thinkingEnabled) prefixParts.push(buildThinkingSystemPrefix());
   prefixParts.push(`[Context: Current time is ${timestamp}]`);
   if (agentic) prefixParts.push(KIRO_AGENTIC_SYSTEM_PROMPT);
   finalContent = `${prefixParts.join("\n\n")}\n\n${finalContent}`;
@@ -449,6 +459,22 @@ export function claudeToKiroRequest(model, body, stream, credentials) {
     if (maxTokens) payload.inferenceConfig.maxTokens = maxTokens;
     if (temperature !== undefined) payload.inferenceConfig.temperature = temperature;
     if (topP !== undefined) payload.inferenceConfig.topP = topP;
+  }
+
+  // Native graded thinking effort (kiro-cli 2.4.0+ wire format): effort travels
+  // as additionalModelRequestFields.output_config.effort, a sibling of
+  // conversationState, with thinking.type:"adaptive" — not a prompt hint.
+  if (thinkingEnabled) {
+    // mode "level" → cfg.level; mode "budget" → nearest discrete level;
+    // else (auto / suffix-implied with no client cfg) → default "high".
+    const level =
+      thinkingCfg?.level ||
+      (thinkingCfg?.mode === "budget" ? budgetToLevel(thinkingCfg.budget) : null) ||
+      "high";
+    payload.additionalModelRequestFields = {
+      thinking: { type: "adaptive" },
+      output_config: { effort: clampEffortForModel(level, upstreamModel) },
+    };
   }
 
   // Non-enumerable hint so the executor can route the upstream model id.

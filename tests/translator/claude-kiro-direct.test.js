@@ -50,7 +50,7 @@ describe("Claude → Kiro (direct route)", () => {
     expect(cur.userInputMessageContext?.toolResults?.length ?? 0).toBe(0);
   });
 
-  it("injects thinking_mode tag when model implies thinking", () => {
+  it("emits native effort field (not a prompt tag) when model implies thinking", () => {
     const out = translateRequest(
       FORMATS.CLAUDE,
       FORMATS.KIRO,
@@ -60,8 +60,14 @@ describe("Claude → Kiro (direct route)", () => {
       null,
       "kiro"
     );
-    expect(out.conversationState.currentMessage.userInputMessage.content).toContain(
-      "<thinking_mode>enabled</thinking_mode>"
+    // Native graded effort travels in additionalModelRequestFields, not as a
+    // <thinking_mode> prompt hint.
+    expect(out.additionalModelRequestFields).toEqual({
+      thinking: { type: "adaptive" },
+      output_config: { effort: "high" },
+    });
+    expect(out.conversationState.currentMessage.userInputMessage.content).not.toContain(
+      "<thinking_mode>"
     );
   });
 });
