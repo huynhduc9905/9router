@@ -38,16 +38,35 @@ export function resolveDefaultProfileArn(authMethod) {
 export const KIRO_THINKING_BUDGET_DEFAULT = 16000;
 
 /**
- * Clamp a Claude/OpenAI effort level to what a given Kiro upstream model
- * accepts in `output_config.effort`.
+ * Whether a Kiro upstream model accepts the native reasoning field
+ * additionalModelRequestFields.output_config.effort.
  *
- * Opus 4.7 / 4.8 accept the full set (low|medium|high|xhigh|max). Older
- * families — Opus 4.6 and the Sonnet/Haiku 4.5/4.6 models Kiro currently
- * exposes — top out at `max` and reject `xhigh`, so `xhigh` clamps to `max`.
+ * Verified empirically (2026-06-18) against the live Kiro backend:
+ *   - Opus 4.7 / 4.8 and Sonnet 4.6 → accept it (Opus 4.8 returns a structured
+ *     thinking block; Sonnet 4.6 returns inline <thinking>).
+ *   - Sonnet/Haiku 4.5 and the non-Claude models (deepseek/glm/qwen) → reject
+ *     it with HTTP 400 "additionalModelRequestFields is not supported".
+ *
+ * @param {string} upstreamModel  upstream Kiro model id (suffixes stripped)
+ * @returns {boolean}
+ */
+export function modelSupportsNativeEffort(upstreamModel) {
+  const m = typeof upstreamModel === "string" ? upstreamModel.toLowerCase() : "";
+  return (
+    m.includes("opus-4.7") ||
+    m.includes("opus-4.8") ||
+    m.includes("sonnet-4.6")
+  );
+}
+
+/**
+ * Clamp an effort level to what a native-effort model accepts. Opus 4.7/4.8
+ * take the full set (low|medium|high|xhigh|max); Sonnet 4.6 tops out at `max`,
+ * so xhigh clamps to max there.
  *
  * @param {string} effort  low|medium|high|xhigh|max
- * @param {string} upstreamModel  upstream Kiro model id (suffixes already stripped)
- * @returns {string} an effort level the model accepts
+ * @param {string} upstreamModel  upstream Kiro model id
+ * @returns {string}
  */
 export function clampEffortForModel(effort, upstreamModel) {
   if (effort !== "xhigh") return effort;

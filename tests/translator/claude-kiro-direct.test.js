@@ -50,7 +50,7 @@ describe("Claude → Kiro (direct route)", () => {
     expect(cur.userInputMessageContext?.toolResults?.length ?? 0).toBe(0);
   });
 
-  it("emits native effort field (not a prompt tag) when model implies thinking", () => {
+  it("uses the prompt-hint tag for a 4.5 model that implies thinking (no native field)", () => {
     const out = translateRequest(
       FORMATS.CLAUDE,
       FORMATS.KIRO,
@@ -60,8 +60,27 @@ describe("Claude → Kiro (direct route)", () => {
       null,
       "kiro"
     );
-    // Native graded effort travels in additionalModelRequestFields, not as a
-    // <thinking_mode> prompt hint.
+    // 4.5 models reject additionalModelRequestFields, so thinking is expressed
+    // via the <thinking_mode> prompt hint instead.
+    expect(out.additionalModelRequestFields).toBeUndefined();
+    expect(out.conversationState.currentMessage.userInputMessage.content).toContain(
+      "<thinking_mode>enabled</thinking_mode>"
+    );
+  });
+
+  it("emits the native effort field for a newer model (Opus 4.8)", () => {
+    const out = translateRequest(
+      FORMATS.CLAUDE,
+      FORMATS.KIRO,
+      "claude-opus-4.8",
+      {
+        messages: [{ role: "user", content: "hi" }],
+        output_config: { effort: "high" },
+      },
+      true,
+      null,
+      "kiro"
+    );
     expect(out.additionalModelRequestFields).toEqual({
       thinking: { type: "adaptive" },
       output_config: { effort: "high" },
