@@ -38,41 +38,47 @@ export function resolveDefaultProfileArn(authMethod) {
 export const KIRO_THINKING_BUDGET_DEFAULT = 16000;
 
 /**
- * Whether a Kiro upstream model accepts the native reasoning field
- * additionalModelRequestFields.output_config.effort.
+ * Native reasoning effort, ported from d-kuro/kirocc (internal/models/effort.go),
+ * which mirrors the per-model additionalModelRequestFieldsSchema advertised by
+ * kiro-cli 2.5.1's ListAvailableModels.
  *
- * Verified empirically (2026-06-18) against the live Kiro backend:
- *   - Opus 4.7 / 4.8 and Sonnet 4.6 → accept it (Opus 4.8 returns a structured
- *     thinking block; Sonnet 4.6 returns inline <thinking>).
- *   - Sonnet/Haiku 4.5 and the non-Claude models (deepseek/glm/qwen) → reject
- *     it with HTTP 400 "additionalModelRequestFields is not supported".
- *
- * @param {string} upstreamModel  upstream Kiro model id (suffixes stripped)
- * @returns {boolean}
+ * Effort travels as additionalModelRequestFields.output_config.effort — a string
+ * enum, NOT a token budget and NOT a prompt hint. Models absent from the enum
+ * table do not support effort and must omit the field entirely (verified: the
+ * 4.5 family and non-Claude models 400 with "additionalModelRequestFields is not
+ * supported"; Opus 4.7/4.8 and Sonnet 4.6 accept it).
  */
-export function modelSupportsNativeEffort(upstreamModel) {
-  const m = typeof upstreamModel === "string" ? upstreamModel.toLowerCase() : "";
-  return (
-    m.includes("opus-4.7") ||
-    m.includes("opus-4.8") ||
-    m.includes("sonnet-4.6")
-  );
-}
+const KIRO_EFFORT_RANK = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 };
+
+const KIRO_EFFORT_ENUMS = {
+  // 5-value enum (includes xhigh).
+  "claude-opus-4.8": ["low", "medium", "high", "xhigh", "max"],
+  "claude-opus-4.7": ["low", "medium", "high", "xhigh", "max"],
+  // 4-value enum (no xhigh; xhigh clamps to max).
+  "claude-opus-4.6": ["low", "medium", "high", "max"],
+  "claude-sonnet-4.6": ["low", "medium", "high", "max"],
+  "claude-opus-4.6-1m": ["low", "medium", "high", "max"],
+  "claude-sonnet-4.6-1m": ["low", "medium", "high", "max"],
+};
 
 /**
- * Clamp an effort level to what a native-effort model accepts. Opus 4.7/4.8
- * take the full set (low|medium|high|xhigh|max); Sonnet 4.6 tops out at `max`,
- * so xhigh clamps to max there.
+ * Resolve the effort string to send for a given Kiro model, or "" to omit
+ * additionalModelRequestFields entirely. Matches kirocc's ResolveEffort:
+ *   - empty or unrecognized value → "" (dropped, never guessed)
+ *   - model without effort support → ""
+ *   - supported level → returned as-is
+ *   - valid level the model doesn't list → the model's highest tier
+ *     (in practice xhigh on a 4-value model → max)
  *
- * @param {string} effort  low|medium|high|xhigh|max
- * @param {string} upstreamModel  upstream Kiro model id
+ * @param {string} upstreamModel  upstream Kiro model id (suffixes stripped)
+ * @param {string} requested      requested effort level
  * @returns {string}
  */
-export function clampEffortForModel(effort, upstreamModel) {
-  if (effort !== "xhigh") return effort;
-  const m = typeof upstreamModel === "string" ? upstreamModel.toLowerCase() : "";
-  const supportsXhigh = m.includes("opus-4.7") || m.includes("opus-4.8");
-  return supportsXhigh ? "xhigh" : "max";
+export function resolveKiroEffort(upstreamModel, requested) {
+  if (!requested || !(requested in KIRO_EFFORT_RANK)) return "";
+  const levels = KIRO_EFFORT_ENUMS[upstreamModel];
+  if (!levels) return "";
+  return levels.includes(requested) ? requested : levels[levels.length - 1];
 }
 
 export const KIRO_AGENTIC_SYSTEM_PROMPT = `

@@ -50,7 +50,7 @@ describe("Claude → Kiro (direct route)", () => {
     expect(cur.userInputMessageContext?.toolResults?.length ?? 0).toBe(0);
   });
 
-  it("uses the prompt-hint tag for a 4.5 model that implies thinking (no native field)", () => {
+  it("sends NO thinking signal for a 4.5 model (no native field, no XML tag)", () => {
     const out = translateRequest(
       FORMATS.CLAUDE,
       FORMATS.KIRO,
@@ -60,15 +60,16 @@ describe("Claude → Kiro (direct route)", () => {
       null,
       "kiro"
     );
-    // 4.5 models reject additionalModelRequestFields, so thinking is expressed
-    // via the <thinking_mode> prompt hint instead.
+    // 4.5 models are absent from the effort enum table, so (matching kirocc)
+    // additionalModelRequestFields is omitted entirely and no <thinking_mode>
+    // prompt hint is injected.
     expect(out.additionalModelRequestFields).toBeUndefined();
-    expect(out.conversationState.currentMessage.userInputMessage.content).toContain(
-      "<thinking_mode>enabled</thinking_mode>"
+    expect(out.conversationState.currentMessage.userInputMessage.content).not.toContain(
+      "<thinking_mode>"
     );
   });
 
-  it("emits the native effort field for a newer model (Opus 4.8)", () => {
+  it("emits output_config.effort only (no thinking object) for Opus 4.8", () => {
     const out = translateRequest(
       FORMATS.CLAUDE,
       FORMATS.KIRO,
@@ -82,7 +83,6 @@ describe("Claude → Kiro (direct route)", () => {
       "kiro"
     );
     expect(out.additionalModelRequestFields).toEqual({
-      thinking: { type: "adaptive" },
       output_config: { effort: "high" },
     });
     expect(out.conversationState.currentMessage.userInputMessage.content).not.toContain(

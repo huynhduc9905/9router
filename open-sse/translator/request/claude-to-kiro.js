@@ -28,15 +28,12 @@ import { v4 as uuidv4 } from "uuid";
 import {
   resolveKiroModel,
   isThinkingEnabled,
-  buildThinkingSystemPrefix,
-  modelSupportsNativeEffort,
-  clampEffortForModel,
+  resolveKiroEffort,
   KIRO_AGENTIC_SYSTEM_PROMPT,
 } from "../../config/kiroConstants.js";
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { ROLE, CLAUDE_BLOCK } from "../schema/index.js";
 import { extractThinking } from "../concerns/thinkingUnified.js";
-import { effortToBudget, budgetToLevel } from "../concerns/thinking.js";
 
 /** Stringify a tool_use input as a readable line. */
 function toolUseToText(name, input) {
@@ -421,26 +418,21 @@ export function claudeToKiroRequest(model, body, stream, credentials) {
     if (systemText) finalContent = `${systemText}\n\n${finalContent}`;
   }
 
-  // Resolve the requested effort level once (used by both thinking mechanisms).
-  const effortLevel = thinkingEnabled
-    ? thinkingCfg?.level ||
-      (thinkingCfg?.mode === "budget" ? budgetToLevel(thinkingCfg.budget) : null) ||
-      "high"
-    : null;
-  const useNativeEffort = thinkingEnabled && modelSupportsNativeEffort(upstreamModel);
-
-  // Prefix order: thinking_mode tag, timestamp marker, then agentic prompt.
-  // Newer models (Opus 4.7/4.8, Sonnet 4.6) take effort natively via
-  // additionalModelRequestFields (added below). Older 4.5 models reject that
-  // field, so for them depth is expressed through a graded <max_thinking_length>
-  // prompt hint instead.
-  const timestamp = new Date().toISOString();
-  const prefixParts = [];
-  if (thinkingEnabled && !useNativeEffort) {
-    const budget = effortToBudget(effortLevel) || undefined; // undefined → default 16000
-    prefixParts.push(buildThinkingSystemPrefix(budget));
+  // Resolve native effort (kirocc precedence): an explicit, recognized
+  // output_config.effort / reasoning_effort wins; otherwise thinking-on (via
+  // thinking.type, model suffix, etc.) falls back to "medium"; otherwise "".
+  // resolveKiroEffort drops unrecognized values and omits the field for models
+  // without effort support (4.5 family, non-Claude). No <thinking_mode> prompt
+  // hint is injected — depth travels only in additionalModelRequestFields.
+  let kiroEffort = "";
+  if (thinkingEnabled) {
+    const explicit = thinkingCfg?.mode === "level" ? thinkingCfg.level : "";
+    kiroEffort = resolveKiroEffort(upstreamModel, explicit || "medium");
   }
-  prefixParts.push(`[Context: Current time is ${timestamp}]`);
+
+  // Prefix order: timestamp marker, then agentic prompt.
+  const timestamp = new Date().toISOString();
+  const prefixParts = [`[Context: Current time is ${timestamp}]`];
   if (agentic) prefixParts.push(KIRO_AGENTIC_SYSTEM_PROMPT);
   finalContent = `${prefixParts.join("\n\n")}\n\n${finalContent}`;
 
@@ -475,15 +467,13 @@ export function claudeToKiroRequest(model, body, stream, credentials) {
     if (topP !== undefined) payload.inferenceConfig.topP = topP;
   }
 
-  // Native graded thinking effort for models that support it (Opus 4.7/4.8,
-  // Sonnet 4.6): effort travels as additionalModelRequestFields.output_config
-  // .effort with thinking.type:"adaptive", a sibling of conversationState —
-  // matching the kiro-cli 2.4.0+ wire format. Older 4.5 models reject this
-  // field (they use the prompt-hint tag injected above instead).
-  if (useNativeEffort) {
+  // Native reasoning effort (kirocc / kiro-cli 2.5.1 wire format): when an
+  // effort level resolved, send it as additionalModelRequestFields.output_config
+  // .effort — a sibling of conversationState. Nothing is sent for models without
+  // effort support, matching kirocc (the field is omitted entirely).
+  if (kiroEffort) {
     payload.additionalModelRequestFields = {
-      thinking: { type: "adaptive" },
-      output_config: { effort: clampEffortForModel(effortLevel, upstreamModel) },
+      output_config: { effort: kiroEffort },
     };
   }
 
