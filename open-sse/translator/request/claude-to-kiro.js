@@ -24,7 +24,7 @@
  */
 import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
-import { v4 as uuidv4 } from "uuid";
+import { v4 as uuidv4, v5 as uuidv5 } from "uuid";
 import {
   resolveKiroModel,
   isThinkingEnabled,
@@ -34,6 +34,27 @@ import {
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
 import { ROLE, CLAUDE_BLOCK } from "../schema/index.js";
 import { extractThinking } from "../concerns/thinkingUnified.js";
+import { parseKiroEnvState } from "./kiroEnvState.js";
+
+// Synthetic assistant acknowledgment kiro-cli inserts after the system prompt in
+// history (mirrors kirocc's placeSystemPrompt). The messageId is deterministic:
+// uuidv5 over "synthetic-ack:<text>" in the URL namespace, byte-identical to
+// kirocc's uuid.NewSHA1(NameSpaceURL, ...).
+const SYNTHETIC_ACK =
+  "I will fully incorporate this information when generating my responses, and explicitly acknowledge relevant parts of the summary when answering questions.";
+const SYNTHETIC_ACK_ID = uuidv5("synthetic-ack:" + SYNTHETIC_ACK, uuidv5.URL);
+
+/** Extract system prompt text (string as-is; array → join text blocks with "\n"). */
+function extractSystemText(system) {
+  if (typeof system === "string") return system;
+  if (Array.isArray(system)) {
+    return system
+      .filter((b) => (b?.type ? b.type === "text" : true) && b?.text)
+      .map((b) => b.text)
+      .join("\n");
+  }
+  return "";
+}
 
 /** Stringify a tool_use input as a readable line. */
 function toolUseToText(name, input) {
@@ -407,16 +428,9 @@ export function claudeToKiroRequest(model, body, stream, credentials) {
 
   let finalContent = currentMessage?.userInputMessage?.content || "";
 
-  // System prompt → prepend to the user content.
-  if (body.system) {
-    let systemText = "";
-    if (typeof body.system === "string") {
-      systemText = body.system;
-    } else if (Array.isArray(body.system)) {
-      systemText = body.system.map((s) => s.text || "").join("\n");
-    }
-    if (systemText) finalContent = `${systemText}\n\n${finalContent}`;
-  }
+  // System prompt is placed as a history pair below (kirocc-style), NOT flattened
+  // into the user content. Extract its text here for that pair + envState parsing.
+  const systemText = extractSystemText(body.system);
 
   // Resolve native effort (kirocc precedence): an explicit, recognized
   // output_config.effort / reasoning_effort wins; otherwise thinking-on (via
@@ -430,31 +444,49 @@ export function claudeToKiroRequest(model, body, stream, credentials) {
     kiroEffort = resolveKiroEffort(upstreamModel, explicit || "medium");
   }
 
-  // Prefix order: timestamp marker, then agentic prompt.
-  const timestamp = new Date().toISOString();
-  const prefixParts = [`[Context: Current time is ${timestamp}]`];
-  if (agentic) prefixParts.push(KIRO_AGENTIC_SYSTEM_PROMPT);
-  finalContent = `${prefixParts.join("\n\n")}\n\n${finalContent}`;
+  // Agentic chunked-write prompt only — no [Context: Current time] marker
+  // (kirocc / kiro-cli send none).
+  if (agentic) {
+    finalContent = `${KIRO_AGENTIC_SYSTEM_PROMPT}\n\n${finalContent}`;
+  }
+
+  // Structured envState from the system prompt's <env> block (kirocc-style),
+  // merged into the current message's context (envState first, before tools).
+  const envState = parseKiroEnvState(systemText);
+  const existingCtx = currentMessage?.userInputMessage?.userInputMessageContext;
+  let curCtx;
+  if (envState || existingCtx) {
+    curCtx = {};
+    if (envState) curCtx.envState = envState;
+    if (existingCtx) Object.assign(curCtx, existingCtx);
+  }
+
+  // System prompt as a dedicated history pair (user + synthetic ack), prepended
+  // to history — matching kirocc/kiro-cli, instead of flattening into content.
+  const systemPair = systemText
+    ? [
+        { userInputMessage: { content: systemText, origin: "KIRO_CLI" } },
+        { assistantResponseMessage: { messageId: SYNTHETIC_ACK_ID, content: SYNTHETIC_ACK } },
+      ]
+    : [];
 
   const payload = {
     conversationState: {
       chatTriggerType: "MANUAL",
       conversationId: uuidv4(),
+      agentTaskType: "vibe",
       currentMessage: {
         userInputMessage: {
           content: finalContent,
           modelId: upstreamModel,
-          origin: "AI_EDITOR",
-          ...(currentMessage?.userInputMessage?.userInputMessageContext && {
-            userInputMessageContext:
-              currentMessage.userInputMessage.userInputMessageContext,
-          }),
+          origin: "KIRO_CLI",
+          ...(curCtx && { userInputMessageContext: curCtx }),
           ...(currentMessage?.userInputMessage?.images && {
             images: currentMessage.userInputMessage.images,
           }),
         },
       },
-      history,
+      history: [...systemPair, ...history],
     },
   };
 
